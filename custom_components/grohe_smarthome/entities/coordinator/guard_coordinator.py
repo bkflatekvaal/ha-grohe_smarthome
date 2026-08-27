@@ -107,12 +107,11 @@ class GuardCoordinator(
             )
 
             withdrawals = data.get("data.withdrawals")
-            if withdrawals is not None and isinstance(withdrawals, list):
-                # Handle None values in waterconsumption
-                return sum([val.get("waterconsumption", 0) for val in withdrawals])
+            if not isinstance(withdrawals, list):
+                raise ValueError("Missing or invalid data.withdrawals")
 
-            else:
-                return 0.0
+            # Handle missing and None values in waterconsumption
+            return sum(val.get("waterconsumption") or 0 for val in withdrawals)
 
         except (GroheUnauthorizedError, GroheForbiddenError):
             # Let auth/rate-limit errors propagate to _async_update_data, which knows how
@@ -122,9 +121,10 @@ class GuardCoordinator(
 
         except Exception as e:
             _LOGGER.error(f"Failed to get total values: {e}")
-            return 0.0
+            raise
 
     async def _get_data(self) -> dict[str, any]:
+        now = datetime.now().astimezone()
         api_data = await self._api.get_appliance_details(
             self._device.location_id, self._device.room_id, self._device.appliance_id
         )
@@ -139,19 +139,19 @@ class GuardCoordinator(
             )
 
         today_water_consumption = await self._get_total_value(
-            datetime.now().astimezone(), datetime.now().astimezone(), GroheGroupBy.DAY
+            now, now, GroheGroupBy.DAY
         )
         if (
             self._total_value_update_day is not None
-            and datetime.now().astimezone().day - self._total_value_update_day.day >= 1
+            and now.date() != self._total_value_update_day.date()
         ) or (self._total_value_update_day is None):
             install_date = datetime.fromisoformat(api_data["installation_date"])
             date_from = install_date
-            date_to = datetime.now().astimezone()
+            date_to = now
             group_by = GroheGroupBy.YEAR
 
             _LOGGER.debug(f"Old total water consumption: {self._total_value}")
-            self._total_value = max(
+            total_value = max(
                 round(
                     await self._get_total_value(
                         date_from,
@@ -164,10 +164,9 @@ class GuardCoordinator(
                 - today_water_consumption,
                 0,
             )
+            self._total_value = total_value
             _LOGGER.debug(f"New total water consumption: {self._total_value}")
-            self._total_value_update_day = (
-                datetime.now().astimezone().replace(tzinfo=self._timezone)
-            )
+            self._total_value_update_day = now.replace(tzinfo=self._timezone)
 
         latest_data = api_data.get("data_latest") or {}
         _LOGGER.debug(
